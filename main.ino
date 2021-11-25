@@ -9,6 +9,7 @@
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <AceButton.h>
+#include "secrets.h"
 
 using namespace ace_button;
 
@@ -24,9 +25,7 @@ AceButton button(BUTTON_PIN);
 WebServer server(80);
 void handleEvent(AceButton*, uint8_t, uint8_t);
 File file;
-
-const char* ssid = "RAVALIEN";
-const char* password = "xxxx";
+float lastCurrent_mA = 0;
 
 bool isLowPower = false;
 uint32_t lasttime =  millis();
@@ -105,7 +104,7 @@ void initNetwork() {
     writeToDisplay("conect", 0, 1);
     WiFi.mode(WIFI_STA);
     writeToDisplay("Connecting...", 0, 1);
-    WiFi.begin(ssid, password);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
     while (WiFi.waitForConnectResult() != WL_CONNECTED) {
       writeToDisplay("Connection Failed!", 0, 0);
       return;
@@ -114,7 +113,6 @@ void initNetwork() {
     writeToDisplay("IP: " + ipToString(WiFi.localIP()), 0, 1);
     server.on("/", handle_OnConnect);
     server.begin();
-
   }
 }
 String ipToString(IPAddress ip) {
@@ -133,6 +131,9 @@ void initFS() {
     writeToDisplay("Unable to open log file", 0, 0);
     return;
   }
+  if (!file.print("|")) {
+    writeToDisplay("File error");
+  }
 }
 
 void initDisplay() {
@@ -144,7 +145,7 @@ void initDisplay() {
   display.setTextSize(1);
   display.setTextColor(WHITE, BLACK);
   display.clearDisplay();
-  writeToDisplay("MiliApp", 0, 0);
+  writeToDisplay("MilliApp", 0, 0);
 }
 
 void writeToDisplay(String message) {
@@ -155,6 +156,10 @@ void writeToDisplay(String message, int col, int row) {
   display.setCursor(10 * col, 10 * row);
   display.print(message);
   display.display();
+}
+
+void handle_Clearlog() {
+  server.send(200, "text/html", "OK" );
 }
 
 void handle_OnConnect() {
@@ -172,24 +177,16 @@ void handleEvent(AceButton* , uint8_t eventType, uint8_t ) {
   }
 }
 
-void handleINA219() {
-  float shuntvoltage = 0;
-  float busvoltage = 0;
-  float current_mA = 0;
-  float loadvoltage = 0;
-  float power_mW = 0;
 
-  shuntvoltage = ina219.getShuntVoltage_mV();
-  busvoltage = ina219.getBusVoltage_V();
-  current_mA = ina219.getCurrent_mA();
-  power_mW = ina219.getPower_mW();
-  loadvoltage = busvoltage + (shuntvoltage / 1000);
-
-  writeToDisplay("Bus Voltage:   " + String(busvoltage) , 0, 2 );
-  writeToDisplay("Shunt Voltage: " + String(shuntvoltage), 0, 3);
-  writeToDisplay("Load Voltage:  " + String(loadvoltage), 0, 4);
-  writeToDisplay("Current:       " + String(current_mA), 0, 5);
-  writeToDisplay("Power:         " + String(power_mW), 0, 6);
+void handleINA219(uint32_t time) {
+  float current_mA = ina219.getCurrent_mA();
+  writeToDisplay("Current: " + String(current_mA) + "mA", 0, 3);
+  if (current_mA > 0 && current_mA != lastCurrent_mA) {
+    if (!file.print( String(time) + ':' + String(current_mA) + ',')) {
+      writeToDisplay("File error");
+    }
+  }
+  lastCurrent_mA = current_mA;
 }
 
 
@@ -198,7 +195,7 @@ void loop() {
   if (now - lasttime >= lowPowerDelaySeconds * 1000 || !isLowPower) {
     lasttime = now;
     writeToDisplay("Uptime: " + String(now / 1000) , 0, 0);
-    handleINA219();
+    handleINA219(now);
   }
 
   button.check();
