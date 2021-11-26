@@ -1,4 +1,4 @@
-# milliapp (wip)
+# milliapp 
 
 Monitor and log (car) battery current using ESP32 + INA219. 
 
