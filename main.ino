@@ -9,7 +9,10 @@
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <AceButton.h>
+#include <math.h>
 #include "secrets.h"
+#include "html.h"
+#include "js.h"
 
 using namespace ace_button;
 
@@ -31,10 +34,18 @@ bool isLowPower = false;
 uint32_t lasttime =  millis();
 uint8_t lowPowerDelaySeconds = 5;
 
+const uint8_t ROW_TITLE = 0;
+const uint8_t ROW_NETWORK = 1;
+const uint8_t ROW_FILE = 2;
+const uint8_t ROW_UPTIME = 3;
+const uint8_t ROW_CURRENT = 4;
+const uint8_t ROW_ERROR = 5;
+const uint8_t ROW_OTHER = 5;
+
 void setup() {
   Serial.begin(115200);
-  initCpu();
   initDisplay();
+  initCpu();
   initNetwork();
   initOTA();
   initFS();
@@ -78,7 +89,7 @@ void initButtons() {
 
 void initINA219() {
   if (! ina219.begin()) {
-    writeToDisplay("Failed to find INA219", 0, 0);
+    writeToDisplay("Failed to find INA219", ROW_CURRENT);
     while (1) {
       delay(10);
     }
@@ -89,8 +100,10 @@ void initINA219() {
 void initCpu() {
   if (isLowPower) {
     setCpuFrequencyMhz(40);
+    writeToDisplay("MilliApp - Low Power", ROW_TITLE);
   } else {
     setCpuFrequencyMhz(240);
+    writeToDisplay("MilliApp", ROW_TITLE);
   }
 }
 
@@ -99,40 +112,47 @@ void initNetwork() {
     server.stop();
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
-    writeToDisplay("Low power mode!", 0, 1);
+    writeToDisplay("Wifi off.", ROW_NETWORK);
   } else {
-    writeToDisplay("conect", 0, 1);
     WiFi.mode(WIFI_STA);
-    writeToDisplay("Connecting...", 0, 1);
+    writeToDisplay("Connecting...", ROW_NETWORK);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-      writeToDisplay("Connection Failed!", 0, 0);
+      writeToDisplay("Connection Failed!", ROW_NETWORK);
       return;
     }
     delay(5000);
-    writeToDisplay("IP: " + ipToString(WiFi.localIP()), 0, 1);
+    writeToDisplay("IP: " + ipToString(WiFi.localIP()), ROW_NETWORK);
     server.on("/", handle_OnConnect);
+    server.on("/clearlog", handle_OnClearLog);
     server.begin();
   }
 }
+
 String ipToString(IPAddress ip) {
   String s = "";
   for (int i = 0; i < 4; i++)
     s += i  ? "." + String(ip[i]) : String(ip[i]);
   return s;
 }
+
 void initFS() {
   if (!SPIFFS.begin(true)) {
-    writeToDisplay("FS Error", 0 , 0);
+    writeToDisplay("SPIFFS Error", ROW_FILE);
     return;
   }
+}
+
+void openLogFile() {
   file = SPIFFS.open(logFileName, "a+");
   if (!file) {
-    writeToDisplay("Unable to open log file", 0, 0);
+    writeToDisplay("Unable to open log file", ROW_FILE);
     return;
   }
   if (!file.print("|")) {
-    writeToDisplay("File error");
+    writeToDisplay("File error", ROW_FILE);
+  } else {
+    writeToDisplay("File: " + logFileName, ROW_FILE);
   }
 }
 
@@ -145,25 +165,46 @@ void initDisplay() {
   display.setTextSize(1);
   display.setTextColor(WHITE, BLACK);
   display.clearDisplay();
-  writeToDisplay("MilliApp", 0, 0);
 }
 
 void writeToDisplay(String message) {
-  writeToDisplay(message, 0, 0);
+  writeToDisplay(message, ROW_OTHER);
 }
 
-void writeToDisplay(String message, int col, int row) {
-  display.setCursor(10 * col, 10 * row);
+void writeToDisplay(String message, int row) {
+  display.setCursor(0, 10 * row);
   display.print(message);
   display.display();
 }
 
-void handle_Clearlog() {
-  server.send(200, "text/html", "OK" );
+void handle_OnClearLog() {
+  bool formatted = SPIFFS.format();
+  if (!formatted) {
+    server.send(200, "text/html", "Error !" );
+  } else {
+    server.send(200, "text/html", "Done ! <A href='/'>Back</A>" );
+  }
+
 }
 
 void handle_OnConnect() {
-  server.send(200, "text/html", "OK" );
+  File logFile = SPIFFS.open(logFileName);
+  if (!logFile) {
+    server.send(200, "text/html", "File error" );
+    return;
+  }
+  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  server.sendHeader("Pragma", "no-cache");
+  server.sendHeader("Expires", "-1");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+  server.sendContent(html);
+  server.sendContent("<script>var data='");
+  while (logFile.available()) {
+    server.sendContent(logFile.readString());
+  }
+  server.sendContent("';" + js +  "</script>");
+  server.client().stop();
 }
 
 void handleEvent(AceButton* , uint8_t eventType, uint8_t ) {
@@ -173,29 +214,40 @@ void handleEvent(AceButton* , uint8_t eventType, uint8_t ) {
       isLowPower = !isLowPower;
       initCpu();
       initNetwork();
+      if (isLowPower) {
+        openLogFile();
+        writeToDisplay("Low power mode!", ROW_OTHER) ;
+      } else {
+        file.close();
+      }
       break;
   }
 }
 
 
-void handleINA219(uint32_t time) {
-  float current_mA = ina219.getCurrent_mA();
-  writeToDisplay("Current: " + String(current_mA) + "mA", 0, 3);
-  if (current_mA > 0 && current_mA != lastCurrent_mA) {
-    if (!file.print( String(time) + ':' + String(current_mA) + ',')) {
-      writeToDisplay("File error");
+void handleINA219(String uptimeSeconds) {
+  float current_mA = round(ina219.getCurrent_mA());
+
+  if (isLowPower && current_mA >= 0 && current_mA != lastCurrent_mA) {
+    if (!file.print( uptimeSeconds + ':' + String(current_mA) + ',')) {
+      writeToDisplay("File error", ROW_FILE);
+    } else {
+      writeToDisplay("Data updated", ROW_FILE);
     }
+    lastCurrent_mA = current_mA;
   }
-  lastCurrent_mA = current_mA;
+  writeToDisplay("Current: " + String(current_mA) + "mA", ROW_CURRENT);
+
 }
 
 
 void loop() {
   uint32_t now = millis() ;
+  String uptimeSeconds = String(now / 1000);
   if (now - lasttime >= lowPowerDelaySeconds * 1000 || !isLowPower) {
     lasttime = now;
-    writeToDisplay("Uptime: " + String(now / 1000) , 0, 0);
-    handleINA219(now);
+    writeToDisplay("Uptime: " + uptimeSeconds, ROW_UPTIME );
+    handleINA219(uptimeSeconds);
   }
 
   button.check();
