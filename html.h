@@ -4,5 +4,5 @@ const char* html = "\
 <HR> \
 <A href='/clearlog'>Clear logs</A> \
 <HR> \
-<PRE id='data'></PREE>
+<PRE id='data'></PREE> \
 ";
